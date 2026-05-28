@@ -1,5 +1,8 @@
 # SELinux Management Toolkit
 
+[![ShellCheck](https://github.com/rajibcse94/SELinux-management/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/rajibcse94/SELinux-management/actions/workflows/shellcheck.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A single-file, dependency-light Bash toolkit that wraps the standard SELinux
 userspace tools into one safe, consistent command-line interface for day-to-day
 administration and troubleshooting.
@@ -232,6 +235,12 @@ Navigate with the arrow keys, Enter to select, Esc/Back to go up a level.
 > [Cockpit](https://cockpit-project.org/) web console, which has an SELinux panel.
 
 ## Safety notes
+
+- Use `--dry-run` (or `-n`) on `selinux-toolkit.sh` and `selinux-config.sh` to
+  preview exactly what a command would do without changing anything.
+- Every state-changing action is recorded to an audit log
+  (`/var/log/selinux-management.log`, override with `SELINUX_LOGFILE`). View it
+  with `selinux-toolkit log` or `selinux-config log`.
 
 - Actions that modify the system require root and prompt for confirmation when
   destructive (disabling SELinux, full relabel, removing a module).

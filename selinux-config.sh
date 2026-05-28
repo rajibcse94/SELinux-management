@@ -61,6 +61,27 @@ have()  { command -v "$1" >/dev/null 2>&1; }
 need_root() { [[ $EUID -eq 0 ]] || die "This action needs root. Re-run: sudo $PROG $*"; }
 confirm() { local r; read -r -p "${1:-Are you sure?} [y/N] " r; [[ "$r" =~ ^[Yy]$ ]]; }
 
+# --dry-run support and an audit log of changes (set in main()).
+DRYRUN="${DRYRUN:-0}"
+LOGFILE="${SELINUX_LOGFILE:-/var/log/selinux-management.log}"
+
+# Append an entry to the audit log (best-effort; never fails the script).
+log_change() {
+    [[ "$DRYRUN" == "1" ]] && return 0
+    { printf '%s | %-14s | user=%s | %s\n' \
+        "$(date -Is)" "$PROG" "${SUDO_USER:-${USER:-root}}" "$*" >> "$LOGFILE"; } 2>/dev/null || true
+}
+
+# Run a state-changing command, honoring --dry-run and logging it.
+run() {
+    if [[ "$DRYRUN" == "1" ]]; then
+        info "[dry-run] would run: $*"
+        return 0
+    fi
+    log_change "$*"
+    "$@"
+}
+
 require_semanage() {
     have semanage || die "'semanage' not found. Install policycoreutils-python-utils."
 }
@@ -267,8 +288,8 @@ cmd_import() {
     local file="${1:?Usage: $PROG import <file>}"
     [[ -f "$file" ]] || die "File not found: $file"
     warn "This will apply SELinux customizations from: $file"
-    confirm "Proceed?" || { info "Aborted."; return 0; }
-    semanage import -f "$file" && ok "Customizations imported." \
+    [[ "$DRYRUN" == "1" ]] || { confirm "Proceed?" || { info "Aborted."; return 0; }; }
+    run semanage import -f "$file" && ok "Customizations imported." \
         || die "Import failed."
 }
 
@@ -286,11 +307,17 @@ cmd_set_mode() {
 
     if [[ "$state" == "disabled" ]]; then
         warn "Disabling SELinux is discouraged and only applies after reboot."
-        confirm "Continue anyway?" || { info "Aborted."; return 0; }
+        [[ "$DRYRUN" == "1" ]] || { confirm "Continue anyway?" || { info "Aborted."; return 0; }; }
+    fi
+
+    if [[ "$DRYRUN" == "1" ]]; then
+        info "[dry-run] would set SELINUX=$state in $SELINUX_CONFIG (with backup) and apply at runtime."
+        return 0
     fi
 
     local backup="${SELINUX_CONFIG}.bak.$(ts)"
     cp -a "$SELINUX_CONFIG" "$backup" && info "Backed up config -> $backup"
+    log_change "set-mode $state: edit $SELINUX_CONFIG + runtime apply"
 
     if grep -qE '^SELINUX=' "$SELINUX_CONFIG"; then
         sed -i -E "s/^SELINUX=.*/SELINUX=${state}/" "$SELINUX_CONFIG"
@@ -343,10 +370,28 @@ cmd_restore_config() {
     need_root "restore-config $*"
     local file="${1:?Usage: $PROG restore-config <backup-file>}"
     [[ -f "$file" ]] || die "Backup not found: $file"
+    if [[ "$DRYRUN" == "1" ]]; then
+        info "[dry-run] would overwrite $SELINUX_CONFIG with $file (after backup)."
+        return 0
+    fi
     confirm "Overwrite $SELINUX_CONFIG with $file?" || { info "Aborted."; return 0; }
     cp -a "$SELINUX_CONFIG" "${SELINUX_CONFIG}.bak.$(ts)" 2>/dev/null || true
+    log_change "restore-config from $file"
     cp -a "$file" "$SELINUX_CONFIG" && ok "Config restored from $file"
     warn "A reboot may be needed if the mode changed."
+}
+
+#==============================================================================
+# log — show the change audit log
+#==============================================================================
+cmd_log() {
+    hdr "Change audit log ($LOGFILE)"
+    if [[ -f "$LOGFILE" ]]; then
+        local n="${1:-40}"
+        tail -n "$n" "$LOGFILE"
+    else
+        warn "No log yet at $LOGFILE — it is created the first time a change is made."
+    fi
 }
 
 #==============================================================================
@@ -370,8 +415,15 @@ ${C_BLD}CHANGE CONFIGURATION${C_RST}
   import <file>             Apply customizations exported elsewhere
   backup [dir]              Full backup (config + state + customizations)
   restore-config <file>     Restore the config file from a backup
+  log [N]                   Show the last N change-audit entries (default 40)
+
+${C_BLD}GLOBAL FLAGS${C_RST}
+  --dry-run, -n             Show what would change without doing it
 
 ${C_BLD}EXAMPLES${C_RST}
+  # Preview a change without applying it:
+  sudo $PROG set-mode permissive --dry-run
+
   # Establish a baseline today, change things, then see exactly what moved:
   sudo $PROG snapshot before-tuning
   sudo setsebool -P httpd_can_network_connect on
@@ -380,16 +432,31 @@ ${C_BLD}EXAMPLES${C_RST}
   # Just answer "what have I changed from defaults?"
   $PROG customizations
 
+  # Review the audit trail of changes this tool made:
+  $PROG log
+
   # Move all your SELinux tweaks to another server:
   sudo $PROG export my-policy.conf      # on host A
   sudo $PROG import my-policy.conf      # on host B
 
 Snapshots/backups are stored in: $STATE_DIR
-Override with SELINUX_STATE_DIR=/path ; disable color with NO_COLOR=1.
+Changes are logged to: $LOGFILE  (override with SELINUX_LOGFILE=/path)
+Override state dir with SELINUX_STATE_DIR=/path ; disable color with NO_COLOR=1.
 EOF
 }
 
 main() {
+    # Global flags can appear anywhere; strip them before dispatch.
+    local args=()
+    for a in "$@"; do
+        case "$a" in
+            --dry-run|-n) DRYRUN=1 ;;
+            *) args+=("$a") ;;
+        esac
+    done
+    set -- "${args[@]:-}"
+    [[ "$DRYRUN" == "1" ]] && warn "DRY-RUN mode: no changes will be made."
+
     local cmd="${1:-help}"; shift || true
     case "$cmd" in
         customizations|custom)  cmd_customizations "$@" ;;
@@ -403,6 +470,7 @@ main() {
         edit-config)            cmd_edit_config "$@" ;;
         backup)                 cmd_backup "$@" ;;
         restore-config)         cmd_restore_config "$@" ;;
+        log)                    cmd_log "$@" ;;
         help|-h|--help)         usage ;;
         version|-v|--version)   echo "$PROG v$VERSION" ;;
         *) err "Unknown command: $cmd"; echo; usage; exit 1 ;;

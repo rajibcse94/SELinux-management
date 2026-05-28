@@ -71,6 +71,26 @@ confirm() {
     [[ "$reply" =~ ^[Yy]$ ]]
 }
 
+# --dry-run support and a shared audit log (DRYRUN set in main()).
+DRYRUN="${DRYRUN:-0}"
+LOGFILE="${SELINUX_LOGFILE:-/var/log/selinux-management.log}"
+
+log_change() {
+    [[ "$DRYRUN" == "1" ]] && return 0
+    { printf '%s | %-14s | user=%s | %s\n' \
+        "$(date -Is)" "$PROG" "${SUDO_USER:-${USER:-root}}" "$*" >> "$LOGFILE"; } 2>/dev/null || true
+}
+
+# Run a state-changing command, honoring --dry-run and logging it.
+run() {
+    if [[ "$DRYRUN" == "1" ]]; then
+        info "[dry-run] would run: $*"
+        return 0
+    fi
+    log_change "$*"
+    "$@"
+}
+
 #--- guard: SELinux must be present at all -------------------------------------
 selinux_present() {
     have getenforce && [[ "$(getenforce 2>/dev/null)" != "Disabled" || -d /sys/fs/selinux ]]
@@ -141,17 +161,17 @@ cmd_mode() {
 
     case "$state" in
         enforcing|Enforcing|1)
-            setenforce 1 && ok "Runtime mode set to Enforcing."
+            run setenforce 1 && ok "Runtime mode set to Enforcing."
             [[ $persistent -eq 1 ]] && persist_mode enforcing
             ;;
         permissive|Permissive|0)
-            setenforce 0 && ok "Runtime mode set to Permissive."
+            run setenforce 0 && ok "Runtime mode set to Permissive."
             [[ $persistent -eq 1 ]] && persist_mode permissive
             ;;
         disabled|Disabled)
             warn "Disabling SELinux is strongly discouraged and cannot be done at runtime."
             warn "It only takes effect after a reboot and requires a full relabel to re-enable."
-            confirm "Write SELINUX=disabled to $SELINUX_CONFIG anyway?" || { info "Aborted."; return 0; }
+            [[ "$DRYRUN" == "1" ]] || { confirm "Write SELINUX=disabled to $SELINUX_CONFIG anyway?" || { info "Aborted."; return 0; }; }
             persist_mode disabled
             warn "Reboot required. Consider 'permissive' instead — it logs without enforcing."
             ;;
@@ -162,8 +182,13 @@ cmd_mode() {
 persist_mode() {
     local want="$1"
     [[ -f "$SELINUX_CONFIG" ]] || die "Config file not found: $SELINUX_CONFIG"
+    if [[ "$DRYRUN" == "1" ]]; then
+        info "[dry-run] would set SELINUX=$want in $SELINUX_CONFIG (with backup)."
+        return 0
+    fi
     cp -a "$SELINUX_CONFIG" "${SELINUX_CONFIG}.bak.$(date +%s)" \
         && info "Backed up config."
+    log_change "persist mode: SELINUX=$want in $SELINUX_CONFIG"
     if grep -qE '^SELINUX=' "$SELINUX_CONFIG"; then
         sed -i -E "s/^SELINUX=.*/SELINUX=${want}/" "$SELINUX_CONFIG"
     else
@@ -289,7 +314,7 @@ cmd_bool() {
             [[ "${3:-}" == "--persistent" || "${3:-}" == "-p" ]] && persistent="-P"
             [[ "$val" =~ ^(on|off|1|0|true|false)$ ]] || die "Value must be on/off."
             need_root "bool set $name $val ${persistent}"
-            setsebool $persistent "$name" "$val" \
+            run setsebool $persistent "$name" "$val" \
                 && ok "Boolean '$name' set to '$val'${persistent:+ (persistent)}."
             ;;
         *)
@@ -309,7 +334,7 @@ cmd_fcontext() {
             local type="${1:?Usage: $PROG fcontext add <selinux_type> <path-regex>}"
             local path="${2:?Specify a path or path regex}"
             need_root "fcontext add $type $path"
-            semanage fcontext -a -t "$type" "$path" \
+            run semanage fcontext -a -t "$type" "$path" \
                 && ok "Rule added: $path -> $type"
             info "Apply it now with: $PROG fcontext restore '$path'"
             ;;
@@ -317,7 +342,7 @@ cmd_fcontext() {
             require_cmd restorecon
             local path="${1:?Usage: $PROG fcontext restore <path>}"
             need_root "fcontext restore $path"
-            restorecon -Rv "$path"
+            run restorecon -Rv "$path"
             ;;
         check)
             local path="${1:?Usage: $PROG fcontext check <path>}"
@@ -354,10 +379,10 @@ cmd_port() {
             local port="${3:?Specify a port number}"
             [[ "$proto" =~ ^(tcp|udp)$ ]] || die "Protocol must be tcp or udp."
             need_root "port add $type $proto $port"
-            semanage port -a -t "$type" -p "$proto" "$port" \
+            run semanage port -a -t "$type" -p "$proto" "$port" \
                 && ok "Labeled $proto/$port as $type" \
                 || { warn "Add failed — port may already be defined; trying modify..."; \
-                     semanage port -m -t "$type" -p "$proto" "$port" \
+                     run semanage port -m -t "$type" -p "$proto" "$port" \
                        && ok "Modified existing rule: $proto/$port -> $type"; }
             ;;
         *)
@@ -387,14 +412,14 @@ cmd_module() {
             [[ "$pp" == *.pp ]] || warn "Expected a compiled .pp module."
             need_root "module install $pp"
             warn "Installing custom policy: $pp"
-            confirm "Proceed?" || { info "Aborted."; return 0; }
-            semodule -i "$pp" && ok "Module installed."
+            [[ "$DRYRUN" == "1" ]] || { confirm "Proceed?" || { info "Aborted."; return 0; }; }
+            run semodule -i "$pp" && ok "Module installed."
             ;;
         remove)
             local name="${1:?Usage: $PROG module remove <name>}"
             need_root "module remove $name"
-            confirm "Remove policy module '$name'?" || { info "Aborted."; return 0; }
-            semodule -r "$name" && ok "Module '$name' removed."
+            [[ "$DRYRUN" == "1" ]] || { confirm "Remove policy module '$name'?" || { info "Aborted."; return 0; }; }
+            run semodule -r "$name" && ok "Module '$name' removed."
             ;;
         *)
             die "Usage: $PROG module <list [filter]|install <file.pp>|remove <name>>"
@@ -412,9 +437,9 @@ cmd_relabel() {
     if [[ "$path" == "/" ]]; then
         warn "Relabeling the entire filesystem is heavy and best done via reboot."
         info "Recommended: 'fixfiles -F onboot && reboot' for a full relabel."
-        confirm "Run restorecon -R / now anyway?" || { info "Aborted."; return 0; }
+        [[ "$DRYRUN" == "1" ]] || { confirm "Run restorecon -R / now anyway?" || { info "Aborted."; return 0; }; }
     fi
-    restorecon -Rv "$path"
+    run restorecon -Rv "$path"
 }
 
 #==============================================================================
@@ -526,6 +551,18 @@ cmd_deps() {
 }
 
 #==============================================================================
+# log — show the change audit log
+#==============================================================================
+cmd_log() {
+    hdr "Change audit log ($LOGFILE)"
+    if [[ -f "$LOGFILE" ]]; then
+        tail -n "${1:-40}" "$LOGFILE"
+    else
+        warn "No log yet at $LOGFILE — created the first time a change is made."
+    fi
+}
+
+#==============================================================================
 # usage / dispatch
 #==============================================================================
 usage() {
@@ -556,20 +593,39 @@ ${C_BLD}COMMANDS${C_RST}
   healthcheck                     Read-only diagnostic summary
   troubleshoot <service>          Guided troubleshooting for a service
   deps                            Check tool dependencies
+  log [N]                         Show last N change-audit entries (default 40)
   help                            Show this help
 
-${C_BLD}EXAMPLES${C_RST}
-  sudo $PROG mode permissive --persistent
-  $PROG denials --since today
-  sudo $PROG bool set httpd_can_network_connect on --persistent
-  sudo $PROG port add http_port_t tcp 8088
-  $PROG troubleshoot httpd
+${C_BLD}GLOBAL FLAGS${C_RST}
+  --dry-run, -n                   Show what would change without doing it
 
+${C_BLD}EXAMPLES${C_RST}
+  sudo ./$PROG mode permissive --persistent
+  sudo ./$PROG mode permissive --dry-run    # preview, change nothing
+  ./$PROG denials --since today
+  sudo ./$PROG bool set httpd_can_network_connect on --persistent
+  sudo ./$PROG port add http_port_t tcp 8088
+  ./$PROG troubleshoot httpd
+  ./$PROG log                                # audit trail of changes
+
+Note: run as ./$PROG from this folder, or just '${PROG%.sh}' after 'sudo ./install.sh'.
+Changes are logged to $LOGFILE (override with SELINUX_LOGFILE=/path).
 Set NO_COLOR=1 to disable colored output.
 EOF
 }
 
 main() {
+    # Strip global flags from anywhere in the args.
+    local args=()
+    for a in "$@"; do
+        case "$a" in
+            --dry-run|-n) DRYRUN=1 ;;
+            *) args+=("$a") ;;
+        esac
+    done
+    set -- "${args[@]:-}"
+    [[ "$DRYRUN" == "1" ]] && warn "DRY-RUN mode: no changes will be made."
+
     local cmd="${1:-help}"; shift || true
     case "$cmd" in
         status)        cmd_status "$@" ;;
@@ -585,6 +641,7 @@ main() {
         healthcheck)   cmd_healthcheck "$@" ;;
         troubleshoot)  cmd_troubleshoot "$@" ;;
         deps)          cmd_deps "$@" ;;
+        log)           cmd_log "$@" ;;
         help|-h|--help) usage ;;
         version|-v|--version) echo "$PROG v$VERSION" ;;
         *) err "Unknown command: $cmd"; echo; usage; exit 1 ;;
