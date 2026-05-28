@@ -14,6 +14,16 @@ sudo ./selinux-toolkit.sh status
 ./selinux-toolkit.sh troubleshoot httpd
 ```
 
+The repo ships **two** scripts:
+
+| Script | Purpose |
+| --- | --- |
+| `selinux-toolkit.sh` | Day-to-day administration & troubleshooting |
+| `selinux-config.sh`  | Changing configuration safely **and** auditing *what changed* |
+
+See [Configuration & change auditing](#configuration--change-auditing) for the
+second tool.
+
 ## Features
 
 - **status / healthcheck** — full status report and a read-only diagnostic
@@ -124,6 +134,60 @@ sudo ./selinux-toolkit.sh module install /tmp/selinux-suggest.XXXX/httpd_local.p
 ```
 
 Set `NO_COLOR=1` to disable colored output (useful in logs and cron).
+
+## Configuration & change auditing
+
+`selinux-config.sh` is a companion tool focused on two things: changing SELinux
+configuration safely, and showing exactly **what has changed** — either from the
+shipped defaults or since a saved baseline. This works because SELinux tracks
+your *local* customizations separately from the policy that ships with the OS.
+
+### See what changed
+
+```bash
+# Show every place SELinux configuration comes from
+./selinux-config.sh where
+
+# Show only what YOU changed from the defaults (no setup needed)
+./selinux-config.sh customizations
+
+# Snapshot a baseline, make changes, then see precisely what moved
+sudo ./selinux-config.sh snapshot before-tuning
+sudo setsebool -P httpd_can_network_connect on
+sudo ./selinux-config.sh diff before-tuning
+```
+
+### Change configuration
+
+```bash
+sudo ./selinux-config.sh set-mode permissive   # edits config + runtime, backs up first
+sudo ./selinux-config.sh edit-config           # opens config in $EDITOR, backs up + diffs
+sudo ./selinux-config.sh backup                # full backup of config + state
+```
+
+### Move customizations between hosts
+
+```bash
+sudo ./selinux-config.sh export my-policy.conf   # on host A
+sudo ./selinux-config.sh import my-policy.conf   # on host B
+```
+
+| Command | Description |
+| --- | --- |
+| `where` | Show every file/source SELinux config comes from |
+| `customizations` | Show everything changed from the shipped defaults |
+| `snapshot [name]` | Save a full-state baseline |
+| `list-snapshots` | List saved baselines |
+| `diff [base] [base2]` | Compare baseline → current (or two baselines) |
+| `export [file]` | Export local customizations to a portable file |
+| `import <file>` | Apply customizations exported from another host |
+| `set-mode <state>` | Set mode persistently (`enforcing`/`permissive`/`disabled`) |
+| `edit-config` | Edit the config file in `$EDITOR` (auto-backup + diff) |
+| `backup [dir]` | Full backup (config + state + customizations) |
+| `restore-config <file>` | Restore the config file from a backup |
+
+Snapshots and backups are stored under `/var/lib/selinux-config-audit`
+(override with `SELINUX_STATE_DIR=/path`).
 
 ## Safety notes
 
