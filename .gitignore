@@ -1,0 +1,15 @@
+# Generated SELinux policy artifacts
+*.pp
+*.te
+*.mod
+*.fc
+
+# Backups created by the toolkit
+*.bak.*
+
+# Editor / OS cruft
+*~
+*.swp
+.DS_Store
+.idea/
+.vscode/
