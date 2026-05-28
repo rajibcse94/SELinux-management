@@ -9,10 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - `selinux-tui.sh`: a menu-driven (TUI) front-end that drives the other scripts.
+  Now at full parity with the CLI — every command (including `relabel`, `import`,
+  `edit-config`, `restore-config`, and the audit `log`) is reachable from the
+  menu, with confirmation dialogs for destructive actions and a session-wide
+  dry-run toggle.
 - `selinux-config.sh`: configuration and change-audit tool (`customizations`,
   `snapshot`, `diff`, `where`, `export`, `import`, `backup`, `restore-config`).
 - Global `--dry-run` / `-n` flag on `selinux-toolkit.sh` and `selinux-config.sh`
   that previews changes without applying them.
+- Global `--yes` / `-y` flag for non-interactive use (skips confirmation
+  prompts); used internally by the TUI, which runs its own dialogs.
 - Change audit log: state-changing actions are appended to
   `/var/log/selinux-management.log` (override with `SELINUX_LOGFILE`), viewable
   with the new `log` subcommand.

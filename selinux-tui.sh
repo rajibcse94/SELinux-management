@@ -59,11 +59,15 @@ menu() {
         --menu "$prompt" "$HEIGHT" "$WIDTH" "$MENU_H" "$@" 3>&1 1>&2 2>&3
 }
 
+# Global dry-run toggle for the TUI session (flipped from the main menu).
+TUI_DRYRUN=0
+
 # Run a command (no colors) and show its output in a scrollable textbox.
+# The TUI handles its own confirmations, so we pass ASSUME_YES=1 to the backend.
 run_show() {
     local title="$1"; shift
     local out; out="$(mktemp)"
-    NO_COLOR=1 bash -c "$*" >"$out" 2>&1
+    NO_COLOR=1 ASSUME_YES=1 DRYRUN="$TUI_DRYRUN" bash -c "$*" >"$out" 2>&1
     [[ -s "$out" ]] || echo "(no output)" >"$out"
     "$DIALOG" --backtitle "$BACKTITLE" --title "$title" \
         --scrolltext --textbox "$out" "$HEIGHT" "$WIDTH"
@@ -101,6 +105,10 @@ menu_mode() {
         disabled   "Off (discouraged; needs reboot)" OFF \
         3>&1 1>&2 2>&3)" || return
     [[ -n "$state" ]] || return
+    if [[ "$state" == "disabled" ]]; then
+        yesno "Disable SELinux?" "Disabling SELinux is discouraged and needs a reboot.\nA safer choice is 'permissive'.\n\nReally set it to disabled?" \
+            || return
+    fi
     local opt=""
     if yesno "Persist?" "Make '$state' survive a reboot (write to config)?"; then
         opt="--persistent"
@@ -139,7 +147,8 @@ menu_fcontext() {
         local c; c="$(menu "File Contexts" "Manage file labeling:" \
             check   "Check a path's context" \
             restore "Restore contexts on a path" \
-            add     "Add a file-context rule")" || return
+            add     "Add a file-context rule" \
+            relabel "Relabel a path recursively")" || return
         case "$c" in
             check)
                 local p; p="$(inputbox "Check Context" "Path:")" || continue
@@ -152,6 +161,11 @@ menu_fcontext() {
                 [[ -n "$t" ]] || continue
                 local p; p="$(inputbox "Add fcontext" "Path or path regex:")" || continue
                 [[ -n "$p" ]] && run_show "fcontext add" "$TOOLKIT fcontext add '$t' '$p'" ;;
+            relabel)
+                local p; p="$(inputbox "Relabel" "Path to relabel recursively:")" || continue
+                [[ -n "$p" ]] || continue
+                yesno "Relabel" "Run restorecon -R on '$p'?\nThis can take a while on large trees." \
+                    && run_show "relabel $p" "$TOOLKIT relabel '$p'" ;;
         esac
     done
 }
@@ -190,10 +204,14 @@ menu_modules() {
                 run_show "Modules" "$TOOLKIT module list '$kw'" ;;
             install)
                 local f; f="$(inputbox "Install Module" "Path to .pp file:")" || continue
-                [[ -n "$f" ]] && run_show "module install" "$TOOLKIT module install '$f'" ;;
+                [[ -n "$f" ]] || continue
+                yesno "Install Module" "Install policy module from:\n$f ?" \
+                    && run_show "module install" "$TOOLKIT module install '$f'" ;;
             remove)
                 local n; n="$(inputbox "Remove Module" "Module name:")" || continue
-                [[ -n "$n" ]] && run_show "module remove" "$TOOLKIT module remove '$n'" ;;
+                [[ -n "$n" ]] || continue
+                yesno "Remove Module" "Remove policy module '$n'?" \
+                    && run_show "module remove" "$TOOLKIT module remove '$n'" ;;
         esac
     done
 }
@@ -231,7 +249,11 @@ menu_config() {
             diff           "Compare baseline to now" \
             listsnaps      "List saved snapshots" \
             export         "Export customizations to a file" \
-            backup         "Full backup")" || return
+            import         "Import customizations from a file" \
+            editconfig     "Edit the config file in an editor" \
+            backup         "Full backup" \
+            restore        "Restore config from a backup file" \
+            log            "View the change audit log")" || return
         case "$c" in
             customizations) run_show "Customizations" "$CONFIG customizations" ;;
             where)          run_show "Where Config Lives" "$CONFIG where" ;;
@@ -245,7 +267,23 @@ menu_config() {
             export)
                 local f; f="$(inputbox "Export" "Output file:" "selinux-custom.conf")" || continue
                 run_show "Export" "$CONFIG export '$f'" ;;
+            import)
+                local f; f="$(inputbox "Import" "File to import:")" || continue
+                [[ -n "$f" ]] || continue
+                yesno "Import" "Apply customizations from:\n$f ?" \
+                    && run_show "Import" "$CONFIG import '$f'" ;;
+            editconfig)
+                msg "Edit Config" "An editor (\$EDITOR) will open the config file with a backup. Close it to return."
+                clear
+                NO_COLOR=1 ASSUME_YES=1 "$CONFIG" edit-config
+                read -r -p "Press Enter to return to the menu... " _ ;;
             backup)         run_show "Backup" "$CONFIG backup" ;;
+            restore)
+                local f; f="$(inputbox "Restore Config" "Backup file to restore:")" || continue
+                [[ -n "$f" ]] || continue
+                yesno "Restore Config" "Overwrite the SELinux config with:\n$f ?" \
+                    && run_show "Restore Config" "$CONFIG restore-config '$f'" ;;
+            log)            run_show "Audit Log" "$CONFIG log" ;;
         esac
     done
 }
@@ -255,7 +293,8 @@ menu_config() {
 #==============================================================================
 main_menu() {
     while :; do
-        local c
+        local c dr_label
+        if [[ "$TUI_DRYRUN" == "1" ]]; then dr_label="ON  (previews only)"; else dr_label="OFF (changes apply)"; fi
         c="$(menu "Main Menu" "SELinux Management — choose an area:" \
             1 "Status & Health" \
             2 "Mode (enforcing/permissive/disabled)" \
@@ -265,6 +304,8 @@ main_menu() {
             6 "Policy Modules" \
             7 "Denials & Troubleshooting" \
             8 "Config & Change Audit" \
+            9 "View change audit log" \
+            D "Dry-run: $dr_label" \
             Q "Quit")" || break
         case "$c" in
             1) menu_status ;;
@@ -275,6 +316,8 @@ main_menu() {
             6) menu_modules ;;
             7) menu_denials ;;
             8) menu_config ;;
+            9) need_toolkit && run_show "Change Audit Log" "$TOOLKIT log" ;;
+            D) if [[ "$TUI_DRYRUN" == "1" ]]; then TUI_DRYRUN=0; else TUI_DRYRUN=1; fi ;;
             Q) break ;;
         esac
     done

@@ -65,6 +65,7 @@ need_root() {
 }
 
 confirm() {
+    [[ "${ASSUME_YES:-0}" == "1" ]] && return 0
     local prompt="${1:-Are you sure?}"
     local reply
     read -r -p "$prompt [y/N] " reply
@@ -73,6 +74,7 @@ confirm() {
 
 # --dry-run support and a shared audit log (DRYRUN set in main()).
 DRYRUN="${DRYRUN:-0}"
+ASSUME_YES="${ASSUME_YES:-0}"
 LOGFILE="${SELINUX_LOGFILE:-/var/log/selinux-management.log}"
 
 log_change() {
@@ -620,6 +622,7 @@ main() {
     for a in "$@"; do
         case "$a" in
             --dry-run|-n) DRYRUN=1 ;;
+            --yes|-y)     ASSUME_YES=1 ;;
             *) args+=("$a") ;;
         esac
     done

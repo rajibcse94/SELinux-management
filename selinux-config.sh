@@ -59,10 +59,11 @@ sub()   { printf '\n%s-- %s --%s\n' "$C_BLD" "$*" "$C_RST"; }
 die()   { err "$*"; exit 1; }
 have()  { command -v "$1" >/dev/null 2>&1; }
 need_root() { [[ $EUID -eq 0 ]] || die "This action needs root. Re-run: sudo $PROG $*"; }
-confirm() { local r; read -r -p "${1:-Are you sure?} [y/N] " r; [[ "$r" =~ ^[Yy]$ ]]; }
+confirm() { [[ "${ASSUME_YES:-0}" == "1" ]] && return 0; local r; read -r -p "${1:-Are you sure?} [y/N] " r; [[ "$r" =~ ^[Yy]$ ]]; }
 
 # --dry-run support and an audit log of changes (set in main()).
 DRYRUN="${DRYRUN:-0}"
+ASSUME_YES="${ASSUME_YES:-0}"
 LOGFILE="${SELINUX_LOGFILE:-/var/log/selinux-management.log}"
 
 # Append an entry to the audit log (best-effort; never fails the script).
@@ -451,6 +452,7 @@ main() {
     for a in "$@"; do
         case "$a" in
             --dry-run|-n) DRYRUN=1 ;;
+            --yes|-y)     ASSUME_YES=1 ;;
             *) args+=("$a") ;;
         esac
     done
