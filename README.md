@@ -14,15 +14,16 @@ sudo ./selinux-toolkit.sh status
 ./selinux-toolkit.sh troubleshoot httpd
 ```
 
-The repo ships **two** scripts:
+The repo ships **three** scripts:
 
 | Script | Purpose |
 | --- | --- |
 | `selinux-toolkit.sh` | Day-to-day administration & troubleshooting |
 | `selinux-config.sh`  | Changing configuration safely **and** auditing *what changed* |
+| `selinux-tui.sh`     | A menu-driven (TUI) front-end for both of the above |
 
 See [Configuration & change auditing](#configuration--change-auditing) for the
-second tool.
+second tool and [Menu interface](#menu-interface) for the third.
 
 ## Features
 
@@ -188,6 +189,47 @@ sudo ./selinux-config.sh import my-policy.conf   # on host B
 
 Snapshots and backups are stored under `/var/lib/selinux-config-audit`
 (override with `SELINUX_STATE_DIR=/path`).
+
+## Menu interface
+
+`selinux-tui.sh` is a terminal menu front-end (a "GUI in the terminal") that
+drives the other two scripts — handy if you prefer pointing and selecting over
+typing commands. It works over SSH and needs no desktop environment.
+
+It requires `whiptail` (package `newt`) or `dialog`:
+
+```bash
+sudo dnf install -y newt        # RHEL/Fedora
+sudo apt install -y whiptail    # Debian/Ubuntu
+```
+
+Run it (keep all three scripts in the same directory):
+
+```bash
+chmod +x selinux-tui.sh
+sudo ./selinux-tui.sh
+```
+
+```
+┌─────────────────── Main Menu ───────────────────┐
+│  SELinux Management — choose an area:            │
+│    1   Status & Health                           │
+│    2   Mode (enforcing/permissive/disabled)      │
+│    3   Booleans                                  │
+│    4   File Contexts                             │
+│    5   Ports                                     │
+│    6   Policy Modules                            │
+│    7   Denials & Troubleshooting                 │
+│    8   Config & Change Audit                     │
+│    Q   Quit                                      │
+└──────────────────────────────────────────────────┘
+```
+
+Navigate with the arrow keys, Enter to select, Esc/Back to go up a level.
+
+> Prefer a graphical desktop GUI? RHEL-family systems ship native ones:
+> `system-config-selinux` (install `policycoreutils-gui`), `sepolicy gui`, or the
+> [Cockpit](https://cockpit-project.org/) web console, which has an SELinux panel.
 
 ## Safety notes
 

@@ -21,8 +21,10 @@ install_one() {
 
 install_one selinux-toolkit.sh selinux-toolkit
 install_one selinux-config.sh  selinux-config
+install_one selinux-tui.sh     selinux-tui
 
 echo
 echo "Done. Try:"
 echo "  selinux-toolkit status"
 echo "  selinux-config customizations"
+echo "  sudo selinux-tui          # menu-driven interface"
